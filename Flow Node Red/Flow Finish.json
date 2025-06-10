@@ -1,0 +1,543 @@
+[
+    {
+        "id": "a637e79cc17afafe",
+        "type": "tab",
+        "label": "CSS+NomPrénomDB+Mailing",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "a025ea642791024f",
+        "type": "group",
+        "z": "a637e79cc17afafe",
+        "style": {
+            "stroke": "#999999",
+            "stroke-opacity": "1",
+            "fill": "none",
+            "fill-opacity": "1",
+            "label": true,
+            "label-position": "nw",
+            "color": "#a4a4a4"
+        },
+        "nodes": [
+            "0480d128aff80b81"
+        ],
+        "x": 1594,
+        "y": 499,
+        "w": 272,
+        "h": 82
+    },
+    {
+        "id": "75fec530a88f13f8",
+        "type": "mqtt in",
+        "z": "a637e79cc17afafe",
+        "name": "",
+        "topic": "rfid/detection",
+        "qos": "0",
+        "datatype": "auto-detect",
+        "broker": "504738118295890c",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 630,
+        "y": 460,
+        "wires": [
+            [
+                "82e250073c81bdd0"
+            ]
+        ]
+    },
+    {
+        "id": "82e250073c81bdd0",
+        "type": "function",
+        "z": "a637e79cc17afafe",
+        "name": "Entrées/Sorties",
+        "func": "var contextTags = context.get(\"tags\") || {};\nvar message = msg.payload;\nvar match = message.match(/antenne (\\w) : ([0-9A-F]+)/);\n\nif (!match) return null;\n\nvar antenne = match[1]; // \"A\" ou \"B\"\nvar tagId = match[2];    // ID du tag\n\n// Génération du timestamp à l’heure locale (Europe/Paris)\nvar now = new Date();\nvar options = {\n    timeZone: 'Europe/Paris',\n    hour12: false,\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n    hour: '2-digit',\n    minute: '2-digit',\n    second: '2-digit'\n};\n\nvar localeTime = now.toLocaleString('fr-FR').replace(',', '');\nvar timestamp = localeTime.replace(/(\\d{2})\\/(\\d{2})\\/(\\d{4})/, '$3-$2-$1');\n\n// Vérifier l'historique\nvar lastRecord = contextTags[tagId];\nif (lastRecord) {\n    var lastAntenna = lastRecord.antenne;\n    var direction = \"\";\n\n    if (lastAntenna === \"A\" && antenne === \"B\") {\n        direction = \"⬆️ Sortie\";\n    } else if (lastAntenna === \"B\" && antenne === \"A\") {\n        direction = \"⬇️ Entrée\";\n    } else {\n        return null; // Ignorer détection erronée\n    }\n\n    msg.payload = {\n        tag_id: tagId,\n        direction: direction,\n        timestamp: timestamp\n    };\n}\n\n// Sauvegarde de la dernière détection\ncontextTags[tagId] = { antenne, timestamp };\ncontext.set(\"tags\", contextTags);\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 840,
+        "y": 460,
+        "wires": [
+            [
+                "e549539a8283abab"
+            ]
+        ]
+    },
+    {
+        "id": "da99669289e1acd2",
+        "type": "mysql",
+        "z": "a637e79cc17afafe",
+        "mydb": "41ae03e2d8992b77",
+        "name": "MariaDB",
+        "x": 1220,
+        "y": 560,
+        "wires": [
+            [
+                "6a1d74e4b31b70fb"
+            ]
+        ]
+    },
+    {
+        "id": "e549539a8283abab",
+        "type": "function",
+        "z": "a637e79cc17afafe",
+        "name": "Récupération MariaDB",
+        "func": "// Sauvegarde du contexte avant la requête\nmsg.tag_id = msg.payload.tag_id;\nmsg.direction = msg.payload.direction;\nmsg.timestamp = msg.payload.timestamp;\n\n// Vérification que le Tag ID existe\nif (!msg.tag_id) {\n    node.error(\"Tag ID manquant\", msg);\n    return null;\n}\n\n// Requête SQL mise à jour pour récupérer le nom de l’équipement,\n// son autorisation de sortie, et les informations utilisateur associées\nmsg.topic = `\n    SELECT tag_id, nom_equipement, autorisation_sortie, user_prenom, user_nom\n    FROM equipements\n    WHERE LOWER(tag_id) = LOWER('${msg.tag_id}')\n    LIMIT 1;\n`;\n\n// Debug\nnode.warn(\"🔍 Requête SQL envoyée : \" + msg.topic);\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1080,
+        "y": 460,
+        "wires": [
+            [
+                "da99669289e1acd2"
+            ]
+        ]
+    },
+    {
+        "id": "6a1d74e4b31b70fb",
+        "type": "function",
+        "z": "a637e79cc17afafe",
+        "name": "Réponse MariaDB",
+        "func": "// Récupérer l'historique stocké dans le contexte (historique des 48h)\nvar history = context.get(\"history\") || [];\n\nlet newEntry;\nif (Array.isArray(msg.payload) && msg.payload.length > 0) {\n    let equipement = msg.payload[0];\n\n    // Déterminer l'autorisation en fonction de la direction\n    let autorisation;\n    if (msg.direction.includes(\"Sortie\")) {\n        autorisation = equipement.autorisation_sortie === 1 ? \"✅ Autorisé\" : \"❌ Interdit\";\n    } else if (msg.direction.includes(\"Entrée\")) {\n        autorisation = \"✅ Autorisé\";\n    } else {\n        autorisation = \"❓ Inconnu\";\n    }\n\n    newEntry = {\n        tag_id: msg.tag_id || \"Inconnu\",\n        direction: msg.direction || \"Inconnue\",\n        timestamp: msg.timestamp || new Date().toISOString().slice(0, 19).replace('T', ' '),\n        nom_equipement: equipement.nom_equipement?.trim() || \"Aucun matériel associé\",\n        autorisation_sortie: autorisation,\n        user_nom: equipement.user_nom || \"\",\n        user_prenom: equipement.user_prenom || \"\"\n    };\n} else {\n    newEntry = {\n        tag_id: msg.tag_id || \"Inconnu\",\n        direction: msg.direction || \"Inconnue\",\n        timestamp: msg.timestamp || new Date().toISOString().slice(0, 19).replace('T', ' '),\n        nom_equipement: \"Aucun matériel associé\",\n        autorisation_sortie: \"❌ Interdit\",\n        user_nom: \"\",\n        user_prenom: \"\"\n    };\n}\n\n// Mettre à jour l’historique (48h)\nhistory.push(newEntry);\nlet cutoff = new Date();\ncutoff.setHours(cutoff.getHours() - 48);\nhistory = history.filter(item => new Date(item.timestamp) > cutoff);\ncontext.set(\"history\", history);\n\nmsg.payload = history;\nnode.warn(\"📜 Données finales envoyées au Dashboard : \" + JSON.stringify(msg.payload));\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1350,
+        "y": 460,
+        "wires": [
+            [
+                "43fe1b92ae530c73",
+                "0480d128aff80b81",
+                "42281725659a48df",
+                "fc32a246b778e30c",
+                "5b5f039c39781367",
+                "5656670f21507f32"
+            ]
+        ]
+    },
+    {
+        "id": "43fe1b92ae530c73",
+        "type": "debug",
+        "z": "a637e79cc17afafe",
+        "name": "debug 11",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1680,
+        "y": 260,
+        "wires": []
+    },
+    {
+        "id": "b54a878b9c14df71",
+        "type": "ui_gauge",
+        "z": "a637e79cc17afafe",
+        "name": "",
+        "group": "0d2388050d3e19a0",
+        "order": 5,
+        "width": "10",
+        "height": "9",
+        "gtype": "gage",
+        "title": "Nombre de sorties global 48h",
+        "label": "Sorties",
+        "format": "{{value}}",
+        "min": 0,
+        "max": "100",
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "",
+        "seg2": "",
+        "diff": false,
+        "className": "",
+        "x": 2170,
+        "y": 640,
+        "wires": []
+    },
+    {
+        "id": "77060b8045a39c89",
+        "type": "ui_gauge",
+        "z": "a637e79cc17afafe",
+        "name": "",
+        "group": "0d2388050d3e19a0",
+        "order": 5,
+        "width": "10",
+        "height": "9",
+        "gtype": "gage",
+        "title": "Nombre de sorties ❌ Interdit 48h",
+        "label": "Sorties interdites",
+        "format": "{{value}}",
+        "min": 0,
+        "max": "100",
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "",
+        "seg2": "",
+        "diff": false,
+        "className": "",
+        "x": 2180,
+        "y": 380,
+        "wires": []
+    },
+    {
+        "id": "42281725659a48df",
+        "type": "function",
+        "z": "a637e79cc17afafe",
+        "name": "compter toutes les sorties (autorisées ou non)",
+        "func": "var history = msg.payload;\nvar cutoff = new Date();\ncutoff.setHours(cutoff.getHours() - 48);\n\nvar sortiesGlobales = history.filter(entry => {\n    let d = new Date(entry.timestamp);\n    return d > cutoff && entry.direction.toLowerCase().includes(\"sortie\");\n});\n\nmsg.payload = sortiesGlobales.length;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1800,
+        "y": 640,
+        "wires": [
+            [
+                "b54a878b9c14df71"
+            ]
+        ]
+    },
+    {
+        "id": "fc32a246b778e30c",
+        "type": "function",
+        "z": "a637e79cc17afafe",
+        "name": "compter uniquement les sorties interdites",
+        "func": "var history = msg.payload;\nvar cutoff = new Date();\ncutoff.setHours(cutoff.getHours() - 48);\n\nvar sortiesInterdites = history.filter(entry => {\n    let d = new Date(entry.timestamp);\n    let isSortie = entry.direction.toLowerCase().includes(\"sortie\");\n    let isInterdit = entry.autorisation_sortie && entry.autorisation_sortie.includes(\"❌\");\n    return d > cutoff && isSortie && isInterdit;\n});\n\nmsg.payload = sortiesInterdites.length;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1780,
+        "y": 380,
+        "wires": [
+            [
+                "77060b8045a39c89"
+            ]
+        ]
+    },
+    {
+        "id": "c8c5f2759584d90b",
+        "type": "e-mail",
+        "z": "a637e79cc17afafe",
+        "server": "127.0.0.1",
+        "port": "25",
+        "authtype": "NONE",
+        "saslformat": true,
+        "token": "oauth2Response.access_token",
+        "secure": false,
+        "tls": false,
+        "name": "",
+        "dname": "Serveur SMTP",
+        "x": 2520,
+        "y": 520,
+        "wires": []
+    },
+    {
+        "id": "b8a5ff08ad7a5c4e",
+        "type": "function",
+        "z": "a637e79cc17afafe",
+        "name": "Préparer alerte email RFID",
+        "func": "// 🧠 Initialisation de l’historique en mémoire\nlet historique = flow.get(\"historique_mouvements\") || {};\nlet payloads = Array.isArray(msg.payload) ? msg.payload : [msg.payload];\n\n// 🧹 Filtrer pour ne garder que le dernier événement par tag_id\nlet lastByTag = {};\nfor (let p of payloads) {\n    if (!p.tag_id || !p.timestamp) continue;\n    if (!lastByTag[p.tag_id] || p.timestamp > lastByTag[p.tag_id].timestamp) {\n        lastByTag[p.tag_id] = p;\n    }\n}\n\nlet mailsToSend = [];\n\nfor (let tag_id in lastByTag) {\n    let current = lastByTag[tag_id];\n    let direction = current.direction;\n    let autorisation = current.autorisation_sortie;\n    let timestamp = current.timestamp;\n    let equipement = current.nom_equipement;\n    let userPrenom = current.user_prenom || \"Utilisateur\";\n    let userNom = current.user_nom || \"\";\n    let email = `${userPrenom.toLowerCase()}.${userNom.toLowerCase()}@lde.fr`;\n\n    // Historique du tag\n    let historiqueTag = historique[tag_id] || [];\n    let dernier = historiqueTag[historiqueTag.length - 1];\n\n    // Ajouter l’événement à l’historique\n    historiqueTag.push({ direction, timestamp, autorisation });\n    historique[tag_id] = historiqueTag;\n    flow.set(\"historique_mouvements\", historique);\n\n    // Détection de conditions d’envoi d’alerte\n    let estSortieInterdite = direction === \"⬆️ Sortie\" && autorisation === \"❌ Interdit\";\n    let dernierEtaitSortieInterdite = dernier?.direction === \"⬆️ Sortie\" && dernier?.autorisation === \"❌ Interdit\";\n    let estEvenementDejaVu = dernier?.timestamp === timestamp;\n\n    let envoyerAlerte = estSortieInterdite && (!dernierEtaitSortieInterdite || !estEvenementDejaVu);\n\n    // Logs utiles\n    node.warn(`🟡 ${tag_id} / ${direction} / ${autorisation} / dernier=${dernier?.direction || \"none\"} (${dernier?.autorisation || \"n/a\"})`);\n\n    if (envoyerAlerte) {\n        const msgCollaborateur = {\n            to: email,\n            topic: \"🔒 ALERTE - Sortie non autorisée détectée\",\n            payload:\n                `Bonjour ${userPrenom} ${userNom},\\n\\n` +\n                `Notre système de contrôle RFID a détecté une sortie de matériel non autorisée.\\n\\n` +\n                `ℹ️ Équipement : ${equipement}\\n` +\n                `🔖 Tag ID : ${tag_id}\\n` +\n                `📅 Date de sortie : ${timestamp}\\n\\n` +\n                `Merci de bien vouloir le ramener dans les plus brefs délais dès votre retour.\\n` +\n                `Si vous pensez qu'il s'agit d'une erreur, merci de contacter l’équipe IT.\\n\\n` +\n                `— Système de contrôle RFID LDE`\n        };\n\n        const msgSupport = {\n            to: \"enzo.storck@lde.fr\",\n            topic: \"📣 IT - Alerte : sortie non autorisée\",\n            payload:\n                `🔔 ALERTE : Sortie non autorisée détectée\\n\\n` +\n                `Un matériel a quitté les locaux sans autorisation.\\n\\n` +\n                `🧑‍💼 Collaborateur : ${userPrenom} ${userNom} (${email})\\n` +\n                `💻 Équipement : ${equipement}\\n` +\n                `🔖 Tag ID : ${tag_id}\\n` +\n                `📅 Date de sortie : ${timestamp}\\n\\n` +\n                `Merci de consigner cette alerte et de prendre contact avec l’utilisateur si nécessaire.\\n\\n` +\n                `— Système de contrôle RFID LDE`\n        };\n\n        node.warn(`📨 ALERTE envoyée pour ${tag_id} à ${timestamp}`);\n        mailsToSend.push([msgCollaborateur, msgSupport]);\n    } else {\n        node.warn(`ℹ️ Aucune alerte envoyée pour ${tag_id} (${direction}, ${autorisation})`);\n    }\n}\n\n// ✅ Retour : une liste d’emails à envoyer ou null\nreturn mailsToSend.length > 0 ? mailsToSend : null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 2160,
+        "y": 460,
+        "wires": [
+            [
+                "c8c5f2759584d90b",
+                "e9b4aab24902c071"
+            ]
+        ]
+    },
+    {
+        "id": "5b5f039c39781367",
+        "type": "function",
+        "z": "a637e79cc17afafe",
+        "name": "Compteur alertes IT (48h)",
+        "func": "const history = msg.payload || [];\n\nconst alerts = history.filter(item =>\n    item.direction.includes(\"Sortie\") &&\n    item.autorisation_sortie === \"❌ Interdit\"\n);\n\nmsg.payload = alerts.length;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1730,
+        "y": 320,
+        "wires": [
+            [
+                "3ad1104f5fce6a81"
+            ]
+        ]
+    },
+    {
+        "id": "3ad1104f5fce6a81",
+        "type": "ui_text",
+        "z": "a637e79cc17afafe",
+        "group": "0d2388050d3e19a0",
+        "order": 12,
+        "width": "0",
+        "height": "0",
+        "name": "",
+        "label": "🔔 Alertes IT (48h)",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#000000",
+        "x": 2130,
+        "y": 320,
+        "wires": []
+    },
+    {
+        "id": "e9b4aab24902c071",
+        "type": "debug",
+        "z": "a637e79cc17afafe",
+        "name": "debug 12",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 2500,
+        "y": 400,
+        "wires": []
+    },
+    {
+        "id": "5656670f21507f32",
+        "type": "function",
+        "z": "a637e79cc17afafe",
+        "name": "Formater Payload",
+        "func": "// Si msg.payload est un tableau avec un seul objet, on extrait cet objet\nif (Array.isArray(msg.payload) && msg.payload.length === 1) {\n    msg.payload = msg.payload[0];\n}\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1710,
+        "y": 460,
+        "wires": [
+            [
+                "b8a5ff08ad7a5c4e"
+            ]
+        ]
+    },
+    {
+        "id": "0480d128aff80b81",
+        "type": "ui_table",
+        "z": "a637e79cc17afafe",
+        "g": "a025ea642791024f",
+        "group": "0d2388050d3e19a0",
+        "name": "Dashboard Passage Tags",
+        "order": 0,
+        "width": "20",
+        "height": "11",
+        "columns": [
+            {
+                "field": "tag_id",
+                "title": "Tag ID",
+                "width": "120",
+                "align": "center",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "direction",
+                "title": "Type",
+                "width": "80",
+                "align": "center",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "timestamp",
+                "title": "Heure",
+                "width": "180",
+                "align": "center",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "nom_equipement",
+                "title": "Équipement",
+                "width": "200",
+                "align": "left",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "autorisation_sortie",
+                "title": "Autorisation",
+                "width": "",
+                "align": "left",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "user_nom",
+                "title": "Nom",
+                "width": "",
+                "align": "left",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "user_prenom",
+                "title": "Prénom",
+                "width": "",
+                "align": "left",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            }
+        ],
+        "outputs": 0,
+        "cts": false,
+        "x": 1730,
+        "y": 540,
+        "wires": []
+    },
+    {
+        "id": "4c830519c172bc6a",
+        "type": "ui_template",
+        "z": "a637e79cc17afafe",
+        "group": "0d2388050d3e19a0",
+        "name": "test mode sombre ",
+        "order": 25,
+        "width": 0,
+        "height": 0,
+        "format": "<style>\n    :root {\n        --blue-accent: #5ABCF9;\n        --blue-dark: #1a2b4c;\n        --blue-mid: #223a5e;\n        --white: #ffffff;\n        --gray-light: #f5f7fa;\n        --gray-dark: #1b1b2e;\n        --text-light: #e6efff;\n        --text-dark: #1f2e3d;\n        --shadow-light: rgba(0, 0, 0, 0.05);\n        --shadow-dark: rgba(58, 123, 213, 0.4);\n    }\n\n    body.dark-mode {\n        --bg: var(--blue-dark);\n        --card-bg: var(--blue-mid);\n        --text: var(--text-light);\n        --accent: var(--blue-accent);\n        --shadow: var(--shadow-dark);\n    }\n\n    body.light-mode {\n        --bg: var(--gray-light);\n        --card-bg: var(--white);\n        --text: var(--text-dark);\n        --accent: var(--blue-accent);\n        --shadow: var(--shadow-light);\n    }\n\n    html,\n    body,\n    .nr-dashboard-theme,\n    .nr-dashboard-template {\n        overflow-x: hidden !important;\n    }\n\n    .nr-dashboard-group,\n    .nr-dashboard-widget {\n        padding-left: 0 !important;\n        padding-right: 0 !important;\n        margin: 0 !important;\n        overflow-x: hidden !important;\n        background: transparent !important;\n        box-shadow: none !important;\n        border: none !important;\n    }\n\n    body,\n    .nr-dashboard-theme,\n    .nr-dashboard-template {\n        background-color: var(--bg) !important;\n        color: var(--text) !important;\n    }\n\n    md-toolbar,\n    .nr-dashboard-header {\n        background-color: var(--bg) !important;\n        color: var(--text) !important;\n        box-shadow: 0 2px 8px var(--shadow);\n    }\n\n    md-card {\n        background-color: var(--card-bg) !important;\n        color: var(--text) !important;\n        border-radius: 12px;\n        box-shadow: 0 4px 12px var(--shadow);\n    }\n\n    h1,\n    h2,\n    h3,\n    h4,\n    label,\n    .nr-dashboard-widget-text {\n        color: var(--text) !important;\n    }\n\n    .nr-dashboard-template .ui-control {\n        color: var(--text) !important;\n    }\n\n    .theme-toggle-btn {\n        position: fixed;\n        top: 10px;\n        right: 10px;\n        background-color: var(--card-bg);\n        color: var(--accent);\n        border: 2px solid var(--accent);\n        border-radius: 20px;\n        padding: 4px 12px;\n        z-index: 999;\n        font-weight: bold;\n        cursor: pointer;\n        box-shadow: 0 0 6px var(--shadow);\n        transition: all 0.3s ease;\n    }\n\n    .theme-toggle-btn:hover {\n        background-color: var(--accent);\n        color: white;\n        box-shadow: 0 0 12px var(--accent);\n    }\n\n    .logo-container {\n        position: fixed;\n        top: 10px;\n        left: 50%;\n        transform: translateX(-50%);\n        z-index: 998;\n        height: 40px;\n    }\n\n    .logo-container img {\n        height: 40px;\n        max-height: 100%;\n        object-fit: contain;\n        filter: invert(0%);\n        transition: filter 0.3s ease;\n    }\n\n    body.dark-mode .logo-container img {\n        filter: invert(100%);\n    }\n\n    /* ✅ Titre intégré comme en haut */\n    .custom-title {\n        margin: 8px 0 4px 10px;\n        font-size: 16px;\n        font-weight: normal;\n        color: #72C6FA !important;\n        font-family: inherit;\n        background: none !important;\n        border: none !important;\n        box-shadow: none !important;\n        padding: 0 !important;\n        line-height: 1.4em;\n    }\n\n    .nr-dashboard-chart .ct-label {\n        color: var(--text) !important;\n        fill: var(--text) !important;\n    }\n\n    ::-webkit-scrollbar {\n        width: 8px;\n    }\n\n    ::-webkit-scrollbar-track {\n        background: var(--card-bg);\n    }\n\n    ::-webkit-scrollbar-thumb {\n        background-color: var(--accent);\n        border-radius: 4px;\n    }\n</style>\n\n<!-- 🔘 Bouton clair/sombre -->\n<button class=\"theme-toggle-btn\" onclick=\"toggleTheme()\">\n    <span id=\"themeLabel\">☀️ Mode clair</span>\n</button>\n\n<!-- 🖼️ Logo centré -->\n<div class=\"logo-container\">\n    <img src=\"/LDE.svg\" alt=\"Logo LDE\" />\n</div>\n\n<!-- 📦 Titre intégré sans encadré -->\n<div class=\"custom-title\">\n    📦 Historique des mouvements de matériels informatique\n</div>\n\n<script>\n    (function(scope) {\n        function applyTheme(theme) {\n            document.body.classList.remove(\"light-mode\", \"dark-mode\");\n            document.body.classList.add(theme);\n            localStorage.setItem(\"dashboard-theme\", theme);\n            const label = document.getElementById(\"themeLabel\");\n            if (label) {\n                label.innerText = theme === \"light-mode\" ? \"🌙 Mode sombre\" : \"☀️ Mode clair\";\n            }\n        }\n\n        window.toggleTheme = function () {\n            const current = document.body.classList.contains(\"dark-mode\") ? \"dark-mode\" : \"light-mode\";\n            const next = current === \"dark-mode\" ? \"light-mode\" : \"dark-mode\";\n            applyTheme(next);\n        }\n\n        const saved = localStorage.getItem(\"dashboard-theme\") || \"dark-mode\";\n        applyTheme(saved);\n    })(scope);\n</script>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 1010,
+        "y": 960,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "504738118295890c",
+        "type": "mqtt-broker",
+        "name": "",
+        "broker": "192.168.121.44",
+        "port": "8883",
+        "tls": "10d7c7c83d1e7e5a",
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": true,
+        "protocolVersion": 4,
+        "keepalive": 60,
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthRetain": "false",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closeRetain": "false",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willRetain": "false",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
+    },
+    {
+        "id": "41ae03e2d8992b77",
+        "type": "MySQLdatabase",
+        "name": "",
+        "host": "127.0.0.1",
+        "port": "3306",
+        "db": "rfid_tracking",
+        "tz": "+00:00",
+        "charset": "UTF8"
+    },
+    {
+        "id": "0d2388050d3e19a0",
+        "type": "ui_group",
+        "name": "🎯 Suivi des équipements – Contrôle RFID",
+        "tab": "dc3613f4ef71e174",
+        "order": 1,
+        "disp": true,
+        "width": "20",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "10d7c7c83d1e7e5a",
+        "type": "tls-config",
+        "name": "",
+        "cert": "",
+        "key": "",
+        "ca": "/etc/mosquitto/certs/mqtt-server.crt",
+        "certname": "",
+        "keyname": "",
+        "caname": "mqtt-server.crt",
+        "servername": "",
+        "verifyservercert": false,
+        "alpnprotocol": ""
+    },
+    {
+        "id": "dc3613f4ef71e174",
+        "type": "ui_tab",
+        "name": "Track RFID LDE",
+        "icon": "dashboard",
+        "disabled": false,
+        "hidden": false
+    }
+]
