@@ -1,0 +1,629 @@
+[
+    {
+        "id": "052075eab4106d8e",
+        "type": "tab",
+        "label": "TEST",
+        "disabled": true,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "bc26332e62160ee0",
+        "type": "group",
+        "z": "052075eab4106d8e",
+        "style": {
+            "stroke": "#999999",
+            "stroke-opacity": "1",
+            "fill": "none",
+            "fill-opacity": "1",
+            "label": true,
+            "label-position": "nw",
+            "color": "#a4a4a4"
+        },
+        "nodes": [
+            "35be866f12cc0a9a"
+        ],
+        "x": 1334,
+        "y": 399,
+        "w": 272,
+        "h": 82
+    },
+    {
+        "id": "f292c29349f703d6",
+        "type": "mqtt in",
+        "z": "052075eab4106d8e",
+        "name": "",
+        "topic": "rfid/detection",
+        "qos": "0",
+        "datatype": "auto-detect",
+        "broker": "f69369e403ed445d",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 110,
+        "y": 360,
+        "wires": [
+            [
+                "4f49c76286ee23dd"
+            ]
+        ]
+    },
+    {
+        "id": "4f49c76286ee23dd",
+        "type": "function",
+        "z": "052075eab4106d8e",
+        "name": "Entrées/Sorties",
+        "func": "var contextTags = context.get(\"tags\") || {};\nvar message = msg.payload;\nvar match = message.match(/antenne (\\w) : ([0-9A-F]+)/);\n\nif (!match) return null;\n\nvar antenne = match[1]; // \"A\" ou \"B\"\nvar tagId = match[2];    // ID du tag\n\n// Correction du fuseau horaire\nvar now = new Date();\nvar timezoneOffset = 1;\nnow.setHours(now.getHours() + timezoneOffset);\n\nvar timestamp = now.toISOString().slice(0, 19).replace('T', ' ');\n\n// Vérifier l'historique\nvar lastRecord = contextTags[tagId];\nif (lastRecord) {\n    var lastAntenna = lastRecord.antenne;\n    var direction = \"\";\n\n    if (lastAntenna === \"A\" && antenne === \"B\") {\n        direction = \"⬆️ Sortie\";\n    } else if (lastAntenna === \"B\" && antenne === \"A\") {\n        direction = \"⬇️ Entrée\";\n    } else {\n        return null; // Ignorer détection erronée\n    }\n\n    msg.payload = {\n        tag_id: tagId,\n        direction: direction,\n        timestamp: timestamp\n    };\n}\n\n// Sauvegarde de la dernière détection\ncontextTags[tagId] = { antenne, timestamp };\ncontext.set(\"tags\", contextTags);\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 320,
+        "y": 360,
+        "wires": [
+            [
+                "73f3e0fb9f6bd96e",
+                "c381f49e4dfcd853"
+            ]
+        ]
+    },
+    {
+        "id": "2a4e38c1b2b79a6c",
+        "type": "mysql",
+        "z": "052075eab4106d8e",
+        "mydb": "41ae03e2d8992b77",
+        "name": "MariaDB",
+        "x": 860,
+        "y": 360,
+        "wires": [
+            [
+                "c79060ac15ec60a4"
+            ]
+        ]
+    },
+    {
+        "id": "73f3e0fb9f6bd96e",
+        "type": "function",
+        "z": "052075eab4106d8e",
+        "name": "Récupération MariaDB",
+        "func": "// Sauvegarde du contexte avant la requête\nmsg.tag_id = msg.payload.tag_id;\nmsg.direction = msg.payload.direction;\nmsg.timestamp = msg.payload.timestamp;\n\n// Vérification que le Tag ID existe\nif (!msg.tag_id) {\n    node.error(\"Tag ID manquant\", msg);\n    return null;\n}\n\n// Requête SQL mise à jour pour récupérer le nom de l’équipement,\n// son autorisation de sortie, et les informations utilisateur associées\nmsg.topic = `\n    SELECT tag_id, nom_equipement, autorisation_sortie, user_prenom, user_nom\n    FROM equipements\n    WHERE LOWER(tag_id) = LOWER('${msg.tag_id}')\n    LIMIT 1;\n`;\n\n// Debug\nnode.warn(\"🔍 Requête SQL envoyée : \" + msg.topic);\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 620,
+        "y": 360,
+        "wires": [
+            [
+                "2a4e38c1b2b79a6c"
+            ]
+        ]
+    },
+    {
+        "id": "c79060ac15ec60a4",
+        "type": "function",
+        "z": "052075eab4106d8e",
+        "name": "Réponse MariaDB",
+        "func": "// Récupérer l'historique stocké dans le contexte (historique des 48h)\nvar history = context.get(\"history\") || [];\n\n// Vérifier que la réponse SQL contient bien un équipement et une autorisation de sortie\nlet newEntry;\nif (Array.isArray(msg.payload) && msg.payload.length > 0) {\n    var equipement = msg.payload[0];\n\n    // Déterminer l'autorisation en fonction de la direction\n    var autorisation;\n    if (msg.direction.includes(\"Sortie\")) {\n        autorisation = equipement.autorisation_sortie === 1 ? \"✅ Autorisé\" : \"❌ Interdit\";\n    } else if (msg.direction.includes(\"Entrée\")) {\n        autorisation = \"✅ Autorisé\";\n    } else {\n        autorisation = \"❓ Inconnu\";\n    }\n\n    newEntry = {\n        tag_id: msg.tag_id || \"Inconnu\",\n        direction: msg.direction || \"Inconnue\",\n        timestamp: msg.timestamp || new Date().toISOString().slice(0, 19).replace('T', ' '),\n        nom_equipement: equipement.nom_equipement?.trim() || \"Aucun matériel associé\",\n        autorisation_sortie: autorisation,\n        user_prenom: equipement.user_prenom || null,\n        user_nom: equipement.user_nom || null\n    };\n} else {\n    newEntry = {\n        tag_id: msg.tag_id || \"Inconnu\",\n        direction: msg.direction || \"Inconnue\",\n        timestamp: msg.timestamp || new Date().toISOString().slice(0, 19).replace('T', ' '),\n        nom_equipement: \"Aucun matériel associé\",\n        autorisation_sortie: \"❌ Interdit\",\n        user_prenom: null,\n        user_nom: null\n    };\n}\n\n// Ajouter la nouvelle entrée à l'historique\nhistory.push(newEntry);\n\n// 🔍 Nettoyage de l'historique : ne garder que les 48 dernières heures\nvar cutoff = new Date();\ncutoff.setHours(cutoff.getHours() - 48);\nhistory = history.filter(item => new Date(item.timestamp) > cutoff);\n\n// Sauvegarder l'historique mis à jour dans le contexte\ncontext.set(\"history\", history);\n\n// Envoyer l'historique complet au Dashboard\nmsg.payload = history;\n\n// Debug avant envoi au Dashboard et à l'alerte mail\nnode.warn(\"📜 Données finales envoyées au Dashboard : \" + JSON.stringify(msg.payload));\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1090,
+        "y": 360,
+        "wires": [
+            [
+                "007ee4a31915dbbd",
+                "35be866f12cc0a9a",
+                "9055e0fabd3249bb",
+                "cd097a556bb5945a",
+                "4529baac9d7e491c",
+                "c1f29a8780599ed6"
+            ]
+        ]
+    },
+    {
+        "id": "007ee4a31915dbbd",
+        "type": "debug",
+        "z": "052075eab4106d8e",
+        "name": "debug 9",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1420,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "b54df3194d8933a5",
+        "type": "ui_gauge",
+        "z": "052075eab4106d8e",
+        "name": "",
+        "group": "0d2388050d3e19a0",
+        "order": 5,
+        "width": "9",
+        "height": "9",
+        "gtype": "gage",
+        "title": "Nombre de sorties global 48h",
+        "label": "Sorties",
+        "format": "{{value}}",
+        "min": 0,
+        "max": "100",
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "",
+        "seg2": "",
+        "diff": false,
+        "className": "",
+        "x": 1910,
+        "y": 540,
+        "wires": []
+    },
+    {
+        "id": "9d66a85ad5073ec8",
+        "type": "ui_gauge",
+        "z": "052075eab4106d8e",
+        "name": "",
+        "group": "0d2388050d3e19a0",
+        "order": 5,
+        "width": "9",
+        "height": "9",
+        "gtype": "gage",
+        "title": "Nombre de sorties ❌ Interdit 48h",
+        "label": "Sorties interdites",
+        "format": "{{value}}",
+        "min": 0,
+        "max": "100",
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "",
+        "seg2": "",
+        "diff": false,
+        "className": "",
+        "x": 1920,
+        "y": 280,
+        "wires": []
+    },
+    {
+        "id": "9055e0fabd3249bb",
+        "type": "function",
+        "z": "052075eab4106d8e",
+        "name": "compter toutes les sorties (autorisées ou non)",
+        "func": "var history = msg.payload;\nvar cutoff = new Date();\ncutoff.setHours(cutoff.getHours() - 48);\n\nvar sortiesGlobales = history.filter(entry => {\n    let d = new Date(entry.timestamp);\n    return d > cutoff && entry.direction.toLowerCase().includes(\"sortie\");\n});\n\nmsg.payload = sortiesGlobales.length;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1540,
+        "y": 540,
+        "wires": [
+            [
+                "b54df3194d8933a5"
+            ]
+        ]
+    },
+    {
+        "id": "cd097a556bb5945a",
+        "type": "function",
+        "z": "052075eab4106d8e",
+        "name": "compter uniquement les sorties interdites",
+        "func": "var history = msg.payload;\nvar cutoff = new Date();\ncutoff.setHours(cutoff.getHours() - 48);\n\nvar sortiesInterdites = history.filter(entry => {\n    let d = new Date(entry.timestamp);\n    let isSortie = entry.direction.toLowerCase().includes(\"sortie\");\n    let isInterdit = entry.autorisation_sortie && entry.autorisation_sortie.includes(\"❌\");\n    return d > cutoff && isSortie && isInterdit;\n});\n\nmsg.payload = sortiesInterdites.length;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1520,
+        "y": 280,
+        "wires": [
+            [
+                "9d66a85ad5073ec8"
+            ]
+        ]
+    },
+    {
+        "id": "3c1b8c983ed43ccf",
+        "type": "e-mail",
+        "z": "052075eab4106d8e",
+        "server": "127.0.0.1",
+        "port": "25",
+        "authtype": "NONE",
+        "saslformat": true,
+        "token": "oauth2Response.access_token",
+        "secure": false,
+        "tls": false,
+        "name": "",
+        "dname": "Serveur SMTP",
+        "x": 2260,
+        "y": 420,
+        "wires": []
+    },
+    {
+        "id": "ccae5682332f443d",
+        "type": "function",
+        "z": "052075eab4106d8e",
+        "name": "Préparer alerte email RFID",
+        "func": "// 🧠 Initialisation de l’historique en mémoire\nlet historique = flow.get(\"historique_mouvements\") || {};\nlet payloads = Array.isArray(msg.payload) ? msg.payload : [msg.payload];\n\n// 🧹 Filtrer pour ne garder que le dernier événement par tag_id\nlet lastByTag = {};\nfor (let p of payloads) {\n    if (!p.tag_id || !p.timestamp) continue;\n    if (!lastByTag[p.tag_id] || p.timestamp > lastByTag[p.tag_id].timestamp) {\n        lastByTag[p.tag_id] = p;\n    }\n}\n\nlet mailsToSend = [];\n\nfor (let tag_id in lastByTag) {\n    let current = lastByTag[tag_id];\n    let direction = current.direction;\n    let autorisation = current.autorisation_sortie;\n    let timestamp = current.timestamp;\n    let equipement = current.nom_equipement;\n    let userPrenom = current.user_prenom || \"Utilisateur\";\n    let userNom = current.user_nom || \"\";\n    let email = `${userPrenom.toLowerCase()}.${userNom.toLowerCase()}@lde.fr`;\n\n    // Historique du tag\n    let historiqueTag = historique[tag_id] || [];\n    let dernier = historiqueTag[historiqueTag.length - 1];\n\n    // Ajouter l’événement à l’historique\n    historiqueTag.push({ direction, timestamp, autorisation });\n    historique[tag_id] = historiqueTag;\n    flow.set(\"historique_mouvements\", historique);\n\n    // Détection de conditions d’envoi d’alerte\n    let estSortieInterdite = direction === \"⬆️ Sortie\" && autorisation === \"❌ Interdit\";\n    let dernierEtaitSortieInterdite = dernier?.direction === \"⬆️ Sortie\" && dernier?.autorisation === \"❌ Interdit\";\n    let estEvenementDejaVu = dernier?.timestamp === timestamp;\n\n    let envoyerAlerte = estSortieInterdite && (!dernierEtaitSortieInterdite || !estEvenementDejaVu);\n\n    // Logs utiles\n    node.warn(`🟡 ${tag_id} / ${direction} / ${autorisation} / dernier=${dernier?.direction || \"none\"} (${dernier?.autorisation || \"n/a\"})`);\n\n    if (envoyerAlerte) {\n        const msgCollaborateur = {\n            to: email,\n            topic: \"🔒 ALERTE - Sortie non autorisée détectée\",\n            payload:\n                `Bonjour ${userPrenom} ${userNom},\\n\\n` +\n                `Notre système de contrôle RFID a détecté une sortie de matériel non autorisée.\\n\\n` +\n                `ℹ️ Équipement : ${equipement}\\n` +\n                `🔖 Tag ID : ${tag_id}\\n` +\n                `📅 Date de sortie : ${timestamp}\\n\\n` +\n                `Merci de bien vouloir le ramener dans les plus brefs délais dès votre retour.\\n` +\n                `Si vous pensez qu'il s'agit d'une erreur, merci de contacter l’équipe IT.\\n\\n` +\n                `— Système de contrôle RFID LDE`\n        };\n\n        const msgSupport = {\n            to: \"enzo.storck@lde.fr\",\n            topic: \"📣 IT - Alerte : sortie non autorisée\",\n            payload:\n                `🔔 ALERTE : Sortie non autorisée détectée\\n\\n` +\n                `Un matériel a quitté les locaux sans autorisation.\\n\\n` +\n                `🧑‍💼 Collaborateur : ${userPrenom} ${userNom} (${email})\\n` +\n                `💻 Équipement : ${equipement}\\n` +\n                `🔖 Tag ID : ${tag_id}\\n` +\n                `📅 Date de sortie : ${timestamp}\\n\\n` +\n                `Merci de consigner cette alerte et de prendre contact avec l’utilisateur si nécessaire.\\n\\n` +\n                `— Système de contrôle RFID LDE`\n        };\n\n        node.warn(`📨 ALERTE envoyée pour ${tag_id} à ${timestamp}`);\n        mailsToSend.push([msgCollaborateur, msgSupport]);\n    } else {\n        node.warn(`ℹ️ Aucune alerte envoyée pour ${tag_id} (${direction}, ${autorisation})`);\n    }\n}\n\n// ✅ Retour : une liste d’emails à envoyer ou null\nreturn mailsToSend.length > 0 ? mailsToSend : null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1900,
+        "y": 360,
+        "wires": [
+            [
+                "3c1b8c983ed43ccf",
+                "01e560130b89a929"
+            ]
+        ]
+    },
+    {
+        "id": "4529baac9d7e491c",
+        "type": "function",
+        "z": "052075eab4106d8e",
+        "name": "Compteur alertes IT (48h)",
+        "func": "const history = msg.payload || [];\n\nconst alerts = history.filter(item =>\n    item.direction.includes(\"Sortie\") &&\n    item.autorisation_sortie === \"❌ Interdit\"\n);\n\nmsg.payload = alerts.length;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1470,
+        "y": 220,
+        "wires": [
+            [
+                "5ee7388a77c301e1"
+            ]
+        ]
+    },
+    {
+        "id": "5ee7388a77c301e1",
+        "type": "ui_text",
+        "z": "052075eab4106d8e",
+        "group": "0d2388050d3e19a0",
+        "order": 12,
+        "width": "0",
+        "height": "0",
+        "name": "",
+        "label": "🔔 Alertes IT (48h)",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#000000",
+        "x": 1870,
+        "y": 220,
+        "wires": []
+    },
+    {
+        "id": "01e560130b89a929",
+        "type": "debug",
+        "z": "052075eab4106d8e",
+        "name": "debug 10",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 2240,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "c1f29a8780599ed6",
+        "type": "function",
+        "z": "052075eab4106d8e",
+        "name": "Formater Payload",
+        "func": "// Si msg.payload est un tableau avec un seul objet, on extrait cet objet\nif (Array.isArray(msg.payload) && msg.payload.length === 1) {\n    msg.payload = msg.payload[0];\n}\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1450,
+        "y": 360,
+        "wires": [
+            [
+                "ccae5682332f443d"
+            ]
+        ]
+    },
+    {
+        "id": "02f1b6b7cd3d37bf",
+        "type": "ui_template",
+        "z": "052075eab4106d8e",
+        "group": "",
+        "name": "Node-Red Dashboard Custom CSS",
+        "order": 1,
+        "width": 0,
+        "height": 0,
+        "format": "<style>\n    /* Main background with a blue-orange gradient */\n    body {\n        background: linear-gradient(55deg,\n                #002B5B 0%,\n                /* Bleu foncé */\n                #00448A 50%,\n                /* Bleu LDE */\n                #F29400 100%\n                /* Orange LDE */\n            );\n        color: white;\n    }\n\n    /* Top bar + Cards */\n    body.nr-dashboard-theme md-toolbar,\n    body.nr-dashboard-theme md-content md-card {\n        background-color: transparent !important;\n        color: white !important;\n    }\n\n    /* Sidebar */\n    body.nr-dashboard-theme md-sidenav {\n        color: white !important;\n        background-color: #00448A !important;\n    }\n\n    /* Active menu item */\n    .nr-menu-item-active div button {\n        border-right: 4px solid #F29400 !important;\n        font-weight: bold;\n    }\n\n    /* Menu list */\n    body.nr-dashboard-theme md-sidenav div.md-list-item-inner {\n        background-color: rgba(0, 43, 91, 0.9) !important;\n        border-radius: 10px !important;\n    }\n\n    /* Group panels */\n    ui-card-panel {\n        background-color: rgba(255, 255, 255, 0.08) !important;\n        border-radius: 12px !important;\n    }\n\n    .nr-dashboard-theme ui-card-panel p.nr-dashboard-cardtitle {\n        color: rgba(255, 255, 255, 0.8) !important;\n        font-weight: 600;\n    }\n\n    /* Buttons */\n    .nr-dashboard-theme .nr-dashboard-button .md-button {\n        background-color: #F29400 !important;\n        color: #002B5B !important;\n        font-weight: bold;\n    }\n\n    .md-button {\n        border-radius: 10px !important;\n        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);\n    }\n\n    /* Dropdown */\n    .nr-dashboard-theme md-select-menu {\n        background-color: #00448A !important;\n    }\n\n    .nr-dashboard-theme md-select-menu md-option[selected] {\n        background-color: #F29400 !important;\n        color: white !important;\n    }\n\n    .nr-dashboard-theme .md-select-menu-container {\n        border-radius: 10px !important;\n    }\n\n    /* Text inputs (e.g. color picker input) */\n    .nr-dashboard-theme .color-picker-input-wrapper>input {\n        background-color: rgba(255, 255, 255, 0.1) !important;\n        color: white !important;\n    }\n\n    /* Images */\n    md-card>img,\n    md-card>md-card-header img,\n    md-card md-card-title-media img {\n        border-radius: 10px !important;\n    }\n</style>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": false,
+        "templateScope": "global",
+        "className": "",
+        "x": 1060,
+        "y": 780,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "592dbf8b0790d4fb",
+        "type": "ui_template",
+        "z": "052075eab4106d8e",
+        "d": true,
+        "group": "a94e32e9.1b90d8",
+        "name": "Node-Red Dashboard Custom CSS",
+        "order": 1,
+        "width": 0,
+        "height": 0,
+        "format": "<style>\n/* ------------------------------------ */\n/* MODIFICATIONS du THÈME DARK NODE-RED */\n/* ------------------------------------ */\n\n/* ----------------------------- */\n/* On évite les clics non voulus */\n/* ----------------------------- */\nroot, a, button, p, div {\n    -webkit-user-select: none !important;\n}\n\n/* --------------------- */\n/* Dégradé du BACKGROUND */\n/* --------------------- */\nbody {\n    background: -webkit-linear-gradient(\n    55deg,\n    #009785 0%,\n    #245aa5 50%,\n    #b800e9 100%\n    );\n    -webkit-touch-callout: none !important;\n}\n\n\n/* ------------------------------------- */\n/* Modification du background par DÉFAUT */\n/* ------------------------------------- */\nbody.nr-dashboard-theme md-toolbar,\nbody.nr-dashboard-theme md-content md-card {\n    background-color: transparent !important;\n    color: #FFFFFF;\n}\n\nui-card-panel {\n    background-color: rgba(255,255,255,0.1) !important;\n    border-radius: 10px !important;\n}\n    \n/* -------------------- */\n/* ARRONDIS des GROUPES */\n/* -------------------- */\n#Homey_Dashboard_Navigation {\n    background-color: transparent !important;\n    border-radius: 10px !important;\n}\n\n/* -------------------------- */\n/* PERSONNALISATIONS diverses */\n/* -------------------------- */\n.md-card.md-default-theme, md-card {\n    border-radius: 10px;\n}\n\n.nr-dashboard-switch.ng-scope {\n    background-color: rgba(255,255,255,.2) !important;\n}\n\n.nr-dashboard-switch.ng-scope:hover {\n    background-color: rgba(255,255,255,.5) !important;\n}\n\n.nr-dashboard-theme .nr-dashboard-button .md-button {\n    background-color: rgba(255,255,255,.2);\n}\n\n.md-button {\n    border-radius: 10px;\n}\n\n.nr-dashboard-cardpanel layout-column {\n    background-color: rgba(255,255,255,0.2) !important;\n    background-color: transparent !important;\n    border-radius: 10px !important;\n}\n\n.nr-dashboard-theme ui-card-panel {\n    border: none;\n}\n\n.nr-dashboard-template {\n    overflow-y: visible;\n}\n.nr-dashboard-theme md-content md-card {\n    background-color: transparent !important;\n}\n\n.nr-dashboard-theme ui-card-panel p.nr-dashboard-cardtitle {\n    color: rgba(255, 255, 255, 0.5);\n}\n\n/* -------------------------------------------- */\n/* FIN DES MODIFICATIONS du THÈME DARK NODE-RED */\n/* -------------------------------------------- */\n\n</style>\n\n<script>\ndocument.ontouchmove = function (e) {\n    e.preventDefault();\n}\n</script>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": false,
+        "templateScope": "global",
+        "x": 1480,
+        "y": 780,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "35be866f12cc0a9a",
+        "type": "ui_table",
+        "z": "052075eab4106d8e",
+        "g": "bc26332e62160ee0",
+        "group": "0d2388050d3e19a0",
+        "name": "Dashboard Passage Tags",
+        "order": 0,
+        "width": "20",
+        "height": "11",
+        "columns": [
+            {
+                "field": "tag_id",
+                "title": "Tag ID",
+                "width": "120",
+                "align": "center",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "direction",
+                "title": "Type",
+                "width": "80",
+                "align": "center",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "timestamp",
+                "title": "Heure",
+                "width": "180",
+                "align": "center",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "nom_equipement",
+                "title": "Équipement",
+                "width": "200",
+                "align": "left",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "autorisation_sortie",
+                "title": "Autorisation",
+                "width": "",
+                "align": "left",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "userNom",
+                "title": "Nom",
+                "width": "",
+                "align": "left",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "userPrenom",
+                "title": "Prénom",
+                "width": "",
+                "align": "left",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            }
+        ],
+        "outputs": 0,
+        "cts": false,
+        "x": 1470,
+        "y": 440,
+        "wires": []
+    },
+    {
+        "id": "25e1f1dfc266571d",
+        "type": "function",
+        "z": "052075eab4106d8e",
+        "d": true,
+        "name": "Insertion de donnéees dans la base ",
+        "func": "var data = msg.payload;\n\n// Vérifier que toutes les données sont présentes\nif (!data.tag_id || !data.direction || !data.timestamp) {\n    node.error(\"Données manquantes pour l'insertion SQL\", msg);\n    return null;\n}\n\n// Construction de la requête SQL\nmsg.topic = `INSERT INTO tag_logs (tag_id, direction, timestamp) VALUES ('${data.tag_id}', '${data.direction}', '${data.timestamp}');`;\n\n// Debug pour voir la requête\nnode.warn(\"🔍 Requête SQL envoyée : \" + msg.topic);\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 600,
+        "y": 540,
+        "wires": [
+            [
+                "2a4e38c1b2b79a6c"
+            ]
+        ]
+    },
+    {
+        "id": "c381f49e4dfcd853",
+        "type": "function",
+        "z": "052075eab4106d8e",
+        "d": true,
+        "name": "Lien Table / données",
+        "func": "var data = msg.payload;\n\n// Debug pour voir les données reçues\nnode.warn(\"🔍 Données reçues dans Lien Table / données : \" + JSON.stringify(data));\n\n// Vérifier si toutes les données sont présentes (on n'arrête plus le message)\nif (!data.tag_id || !data.direction || !data.timestamp) {\n    node.error(\"⚠️ Données manquantes, mais on envoie quand même au Dashboard\", msg);\n}\n\n// Vérifier si `nom_equipement` est défini, sinon mettre \"Aucun matériel associé\"\nif (!data.nom_equipement) {\n    data.nom_equipement = \"Aucun matériel associé\";\n}\n\n// Récupération de l'historique\nvar history = context.get(\"history\") || [];\n\n// Construire l'entrée mise à jour\nvar entry = {\n    tag_id: data.tag_id,\n    direction: data.direction,\n    timestamp: data.timestamp,\n    nom_equipement: data.nom_equipement\n};\n\n// Debug avant envoi\nnode.warn(\"🚀 Données FINALES envoyées au Dashboard : \" + JSON.stringify(entry));\n\n// Ajouter à l'historique\nhistory.push(entry);\n\n// Garder uniquement les 48 dernières heures\nvar cutoff = new Date();\ncutoff.setHours(cutoff.getHours() - 48);\nhistory = history.filter(item => new Date(item.timestamp) > cutoff);\n\n// Sauvegarde de l'historique\ncontext.set(\"history\", history);\n\n// **Envoyer les données au Dashboard (toujours)**\nmsg.payload = history;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 300,
+        "y": 540,
+        "wires": [
+            [
+                "25e1f1dfc266571d"
+            ]
+        ],
+        "outputLabels": [
+            "1"
+        ]
+    },
+    {
+        "id": "f69369e403ed445d",
+        "type": "mqtt-broker",
+        "name": "",
+        "broker": "192.168.253.44",
+        "port": "8883",
+        "tls": "10d7c7c83d1e7e5a",
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": true,
+        "protocolVersion": 4,
+        "keepalive": 60,
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthRetain": "false",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closeRetain": "false",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willRetain": "false",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
+    },
+    {
+        "id": "41ae03e2d8992b77",
+        "type": "MySQLdatabase",
+        "name": "",
+        "host": "127.0.0.1",
+        "port": "3306",
+        "db": "rfid_tracking",
+        "tz": "+00:00",
+        "charset": "UTF8"
+    },
+    {
+        "id": "0d2388050d3e19a0",
+        "type": "ui_group",
+        "name": "🎯 Suivi des équipements – Contrôle RFID",
+        "tab": "dc3613f4ef71e174",
+        "order": 1,
+        "disp": true,
+        "width": "20",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "a94e32e9.1b90d8",
+        "type": "ui_group",
+        "name": "Heure",
+        "tab": "44ba48a4.5380b",
+        "order": 1,
+        "disp": false,
+        "width": "6",
+        "collapse": false
+    },
+    {
+        "id": "10d7c7c83d1e7e5a",
+        "type": "tls-config",
+        "name": "",
+        "cert": "",
+        "key": "",
+        "ca": "/etc/mosquitto/certs/mqtt-server.crt",
+        "certname": "",
+        "keyname": "",
+        "caname": "mqtt-server.crt",
+        "servername": "",
+        "verifyservercert": false,
+        "alpnprotocol": ""
+    },
+    {
+        "id": "dc3613f4ef71e174",
+        "type": "ui_tab",
+        "name": "Track RFID LDE",
+        "icon": "dashboard",
+        "disabled": false,
+        "hidden": false
+    },
+    {
+        "id": "44ba48a4.5380b",
+        "type": "ui_tab",
+        "name": "Homey Dashboard",
+        "icon": "dashboard",
+        "order": 1,
+        "disabled": false,
+        "hidden": false
+    }
+]
