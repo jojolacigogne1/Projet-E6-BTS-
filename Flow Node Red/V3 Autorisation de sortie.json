@@ -1,0 +1,429 @@
+[
+    {
+        "id": "82933baf6865974e",
+        "type": "tab",
+        "label": "Ajout de l'autorisation de sortie",
+        "disabled": true,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "07b3cbe343039909",
+        "type": "group",
+        "z": "82933baf6865974e",
+        "style": {
+            "stroke": "#999999",
+            "stroke-opacity": "1",
+            "fill": "none",
+            "fill-opacity": "1",
+            "label": true,
+            "label-position": "nw",
+            "color": "#a4a4a4"
+        },
+        "nodes": [
+            "c5e3926d32a9cc8c"
+        ],
+        "x": 1254,
+        "y": 759,
+        "w": 272,
+        "h": 82
+    },
+    {
+        "id": "1182bd07b353cfb2",
+        "type": "mqtt in",
+        "z": "82933baf6865974e",
+        "name": "",
+        "topic": "rfid/detection",
+        "qos": "0",
+        "datatype": "auto-detect",
+        "broker": "f69369e403ed445d",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 190,
+        "y": 440,
+        "wires": [
+            [
+                "f4baa6522a772611"
+            ]
+        ]
+    },
+    {
+        "id": "f4baa6522a772611",
+        "type": "function",
+        "z": "82933baf6865974e",
+        "name": "Entrées/Sorties",
+        "func": "var contextTags = context.get(\"tags\") || {};\nvar message = msg.payload;\nvar match = message.match(/antenne (\\w) : ([0-9A-F]+)/);\n\nif (!match) return null;\n\nvar antenne = match[1]; // \"A\" ou \"B\"\nvar tagId = match[2];    // ID du tag\n\n// Correction du fuseau horaire\nvar now = new Date();\nvar timezoneOffset = 1;\nnow.setHours(now.getHours() + timezoneOffset);\n\nvar timestamp = now.toISOString().slice(0, 19).replace('T', ' ');\n\n// Vérifier l'historique\nvar lastRecord = contextTags[tagId];\nif (lastRecord) {\n    var lastAntenna = lastRecord.antenne;\n    var direction = \"\";\n\n    if (lastAntenna === \"A\" && antenne === \"B\") {\n        direction = \"⬆️ Sortie\";\n    } else if (lastAntenna === \"B\" && antenne === \"A\") {\n        direction = \"⬇️ Entrée\";\n    } else {\n        return null; // Ignorer détection erronée\n    }\n\n    msg.payload = {\n        tag_id: tagId,\n        direction: direction,\n        timestamp: timestamp\n    };\n}\n\n// Sauvegarde de la dernière détection\ncontextTags[tagId] = { antenne, timestamp };\ncontext.set(\"tags\", contextTags);\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 300,
+        "y": 620,
+        "wires": [
+            [
+                "e7904474957dd3ea",
+                "4b54f5c69a9a1038"
+            ]
+        ]
+    },
+    {
+        "id": "e7904474957dd3ea",
+        "type": "function",
+        "z": "82933baf6865974e",
+        "name": "Lien Table / données",
+        "func": "var data = msg.payload;\n\n// Debug pour voir les données reçues\nnode.warn(\"🔍 Données reçues dans Lien Table / données : \" + JSON.stringify(data));\n\n// Vérifier si toutes les données sont présentes (on n'arrête plus le message)\nif (!data.tag_id || !data.direction || !data.timestamp) {\n    node.error(\"⚠️ Données manquantes, mais on envoie quand même au Dashboard\", msg);\n}\n\n// Vérifier si `nom_equipement` est défini, sinon mettre \"Aucun matériel associé\"\nif (!data.nom_equipement) {\n    data.nom_equipement = \"Aucun matériel associé\";\n}\n\n// Récupération de l'historique\nvar history = context.get(\"history\") || [];\n\n// Construire l'entrée mise à jour\nvar entry = {\n    tag_id: data.tag_id,\n    direction: data.direction,\n    timestamp: data.timestamp,\n    nom_equipement: data.nom_equipement\n};\n\n// Debug avant envoi\nnode.warn(\"🚀 Données FINALES envoyées au Dashboard : \" + JSON.stringify(entry));\n\n// Ajouter à l'historique\nhistory.push(entry);\n\n// Garder uniquement les 48 dernières heures\nvar cutoff = new Date();\ncutoff.setHours(cutoff.getHours() - 48);\nhistory = history.filter(item => new Date(item.timestamp) > cutoff);\n\n// Sauvegarde de l'historique\ncontext.set(\"history\", history);\n\n// **Envoyer les données au Dashboard (toujours)**\nmsg.payload = history;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 180,
+        "y": 880,
+        "wires": [
+            [
+                "37e0ed6fb3bd1778"
+            ]
+        ],
+        "outputLabels": [
+            "1"
+        ]
+    },
+    {
+        "id": "3da6b360f21c8c27",
+        "type": "mysql",
+        "z": "82933baf6865974e",
+        "mydb": "41ae03e2d8992b77",
+        "name": "MariaDB",
+        "x": 680,
+        "y": 620,
+        "wires": [
+            [
+                "709ccb8fbefa5567"
+            ]
+        ]
+    },
+    {
+        "id": "37e0ed6fb3bd1778",
+        "type": "function",
+        "z": "82933baf6865974e",
+        "name": "Insertion de donnéees dans la base ",
+        "func": "var data = msg.payload;\n\n// Vérifier que toutes les données sont présentes\nif (!data.tag_id || !data.direction || !data.timestamp) {\n    node.error(\"Données manquantes pour l'insertion SQL\", msg);\n    return null;\n}\n\n// Construction de la requête SQL\nmsg.topic = `INSERT INTO tag_logs (tag_id, direction, timestamp) VALUES ('${data.tag_id}', '${data.direction}', '${data.timestamp}');`;\n\n// Debug pour voir la requête\nnode.warn(\"🔍 Requête SQL envoyée : \" + msg.topic);\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 580,
+        "y": 800,
+        "wires": [
+            [
+                "3da6b360f21c8c27"
+            ]
+        ]
+    },
+    {
+        "id": "4b54f5c69a9a1038",
+        "type": "function",
+        "z": "82933baf6865974e",
+        "name": "Récupération MariaDB",
+        "func": "// Sauvegarde du contexte avant la requête\nmsg.tag_id = msg.payload.tag_id;\nmsg.direction = msg.payload.direction;\nmsg.timestamp = msg.payload.timestamp;\n\n// Vérification que le Tag ID existe\nif (!msg.tag_id) {\n    node.error(\"Tag ID manquant\", msg);\n    return null;\n}\n\n// Requête SQL pour récupérer le nom de l’équipement et son autorisation de sortie\nmsg.topic = `SELECT nom_equipement, autorisation_sortie FROM equipements WHERE LOWER(tag_id) = LOWER('${msg.tag_id}') LIMIT 1;`;\n\n// Debug\nnode.warn(\"🔍 Requête SQL envoyée : \" + msg.topic);\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 680,
+        "y": 500,
+        "wires": [
+            [
+                "3da6b360f21c8c27"
+            ]
+        ]
+    },
+    {
+        "id": "709ccb8fbefa5567",
+        "type": "function",
+        "z": "82933baf6865974e",
+        "name": "Réponse MariaDB",
+        "func": "// Récupérer l'historique stocké dans le contexte (historique des 48h)\nvar history = context.get(\"history\") || [];\n\n// Vérifier que la réponse SQL contient bien un équipement et une autorisation de sortie\nif (Array.isArray(msg.payload) && msg.payload.length > 0) {\n    var equipement = msg.payload[0];\n\n    // Déterminer l'autorisation en fonction de la direction\n    var autorisation;\n    if (msg.direction.includes(\"Sortie\")) {\n        autorisation = equipement.autorisation_sortie === 1 ? \"✅ Autorisé\" : \"❌ Interdit\";\n    } else if (msg.direction.includes(\"Entrée\")) {\n        autorisation = \"✅ Autorisé\";  // Les entrées sont toujours autorisées\n    } else {\n        autorisation = \"❓ Inconnu\";\n    }\n\n    var newEntry = {\n        tag_id: msg.tag_id || \"Inconnu\",\n        direction: msg.direction || \"Inconnue\",\n        timestamp: msg.timestamp || new Date().toISOString().slice(0, 19).replace('T', ' '),\n        nom_equipement: equipement.nom_equipement.trim() || \"Aucun matériel associé\",\n        autorisation_sortie: autorisation\n    };\n} else {\n    var newEntry = {\n        tag_id: msg.tag_id || \"Inconnu\",\n        direction: msg.direction || \"Inconnue\",\n        timestamp: msg.timestamp || new Date().toISOString().slice(0, 19).replace('T', ' '),\n        nom_equipement: \"Aucun matériel associé\",\n        autorisation_sortie: \"❌ Interdit\"\n    };\n}\n\n// Ajouter la nouvelle entrée à l'historique\nhistory.push(newEntry);\n\n// **🔍 Nettoyage de l'historique : ne garder que les 48 dernières heures**\nvar cutoff = new Date();\ncutoff.setHours(cutoff.getHours() - 48); // Supprime les événements vieux de plus de 48h\nhistory = history.filter(item => new Date(item.timestamp) > cutoff);\n\n// Sauvegarder l'historique mis à jour dans le contexte\ncontext.set(\"history\", history);\n\n// Envoyer l'historique complet au Dashboard\nmsg.payload = history;\n\n// Debug avant envoi au Dashboard\nnode.warn(\"📜 Données finales envoyées au Dashboard : \" + JSON.stringify(msg.payload));\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 2,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1070,
+        "y": 580,
+        "wires": [
+            [
+                "4b0f8bd646fca603",
+                "c5e3926d32a9cc8c",
+                "0603394c01063e1e",
+                "98073a27c744beb8"
+            ]
+        ]
+    },
+    {
+        "id": "4b0f8bd646fca603",
+        "type": "debug",
+        "z": "82933baf6865974e",
+        "name": "debug 6",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1500,
+        "y": 600,
+        "wires": []
+    },
+    {
+        "id": "dc5918896cd6fc25",
+        "type": "ui_gauge",
+        "z": "82933baf6865974e",
+        "name": "",
+        "group": "0d2388050d3e19a0",
+        "order": 5,
+        "width": "4",
+        "height": "4",
+        "gtype": "gage",
+        "title": "Nombre de sorties global 48h",
+        "label": "Sorties",
+        "format": "{{value}}",
+        "min": 0,
+        "max": "100",
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "",
+        "seg2": "",
+        "diff": false,
+        "className": "",
+        "x": 1280,
+        "y": 920,
+        "wires": []
+    },
+    {
+        "id": "c5e3926d32a9cc8c",
+        "type": "ui_table",
+        "z": "82933baf6865974e",
+        "g": "07b3cbe343039909",
+        "group": "0d2388050d3e19a0",
+        "name": "Dashboard Passage Tags",
+        "order": 0,
+        "width": "13",
+        "height": "11",
+        "columns": [
+            {
+                "field": "tag_id",
+                "title": "Tag ID",
+                "width": "120",
+                "align": "center",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "direction",
+                "title": "Type",
+                "width": "80",
+                "align": "center",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "timestamp",
+                "title": "Heure",
+                "width": "180",
+                "align": "center",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "nom_equipement",
+                "title": "Équipement",
+                "width": "200",
+                "align": "left",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            },
+            {
+                "field": "autorisation_sortie",
+                "title": "Autorisation",
+                "width": "",
+                "align": "left",
+                "formatter": "plaintext",
+                "formatterParams": {
+                    "target": "_blank"
+                }
+            }
+        ],
+        "outputs": 0,
+        "cts": false,
+        "x": 1390,
+        "y": 800,
+        "wires": []
+    },
+    {
+        "id": "73821b96013a1c30",
+        "type": "ui_gauge",
+        "z": "82933baf6865974e",
+        "name": "",
+        "group": "0d2388050d3e19a0",
+        "order": 5,
+        "width": "4",
+        "height": "4",
+        "gtype": "gage",
+        "title": "Nombre de sorties ❌ Interdit 48h",
+        "label": "Sorties interdites",
+        "format": "{{value}}",
+        "min": 0,
+        "max": "100",
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "",
+        "seg2": "",
+        "diff": false,
+        "className": "",
+        "x": 1380,
+        "y": 320,
+        "wires": []
+    },
+    {
+        "id": "0603394c01063e1e",
+        "type": "function",
+        "z": "82933baf6865974e",
+        "name": "compter toutes les sorties (autorisées ou non)",
+        "func": "var history = msg.payload;\nvar cutoff = new Date();\ncutoff.setHours(cutoff.getHours() - 48);\n\nvar sortiesGlobales = history.filter(entry => {\n    let d = new Date(entry.timestamp);\n    return d > cutoff && entry.direction.toLowerCase().includes(\"sortie\");\n});\n\nmsg.payload = sortiesGlobales.length;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 900,
+        "y": 920,
+        "wires": [
+            [
+                "dc5918896cd6fc25"
+            ]
+        ]
+    },
+    {
+        "id": "98073a27c744beb8",
+        "type": "function",
+        "z": "82933baf6865974e",
+        "name": "compter uniquement les sorties interdites",
+        "func": "var history = msg.payload;\nvar cutoff = new Date();\ncutoff.setHours(cutoff.getHours() - 48);\n\nvar sortiesInterdites = history.filter(entry => {\n    let d = new Date(entry.timestamp);\n    let isSortie = entry.direction.toLowerCase().includes(\"sortie\");\n    let isInterdit = entry.autorisation_sortie && entry.autorisation_sortie.includes(\"❌\");\n    return d > cutoff && isSortie && isInterdit;\n});\n\nmsg.payload = sortiesInterdites.length;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1020,
+        "y": 320,
+        "wires": [
+            [
+                "73821b96013a1c30"
+            ]
+        ]
+    },
+    {
+        "id": "f69369e403ed445d",
+        "type": "mqtt-broker",
+        "name": "",
+        "broker": "192.168.253.44",
+        "port": "8883",
+        "tls": "10d7c7c83d1e7e5a",
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": true,
+        "protocolVersion": 4,
+        "keepalive": 60,
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthRetain": "false",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closeRetain": "false",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willRetain": "false",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
+    },
+    {
+        "id": "41ae03e2d8992b77",
+        "type": "MySQLdatabase",
+        "name": "",
+        "host": "127.0.0.1",
+        "port": "3306",
+        "db": "rfid_tracking",
+        "tz": "+00:00",
+        "charset": "UTF8"
+    },
+    {
+        "id": "0d2388050d3e19a0",
+        "type": "ui_group",
+        "name": "🎯 Suivi des équipements – Contrôle RFID",
+        "tab": "dc3613f4ef71e174",
+        "order": 1,
+        "disp": true,
+        "width": "20",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "10d7c7c83d1e7e5a",
+        "type": "tls-config",
+        "name": "",
+        "cert": "",
+        "key": "",
+        "ca": "/etc/mosquitto/certs/mqtt-server.crt",
+        "certname": "",
+        "keyname": "",
+        "caname": "mqtt-server.crt",
+        "servername": "",
+        "verifyservercert": false,
+        "alpnprotocol": ""
+    },
+    {
+        "id": "dc3613f4ef71e174",
+        "type": "ui_tab",
+        "name": "Track RFID LDE",
+        "icon": "dashboard",
+        "disabled": false,
+        "hidden": false
+    }
+]
